@@ -1,6 +1,12 @@
 import { NextResponse } from "next/server";
 import { normalizeSnapshot } from "@/lib/normalize";
-import { readSnapshot, writeSnapshot, mergeEquityHistory, usingKv } from "@/lib/store";
+import {
+  listAccounts,
+  readSnapshot,
+  writeSnapshot,
+  mergeEquityHistory,
+  usingKv,
+} from "@/lib/store";
 import { demoSnapshot } from "@/lib/demo";
 
 export const dynamic = "force-dynamic";
@@ -26,29 +32,24 @@ export async function OPTIONS() {
   return new NextResponse(null, { status: 204, headers: CORS });
 }
 
+const json = (body) =>
+  NextResponse.json(body, { headers: { ...CORS, "Cache-Control": "no-store" } });
+
 export async function GET(req) {
   const url = new URL(req.url);
-  const stored = await readSnapshot();
+  // No ?account= -> whichever account reported most recently.
+  const requested = url.searchParams.get("account");
+  const accounts = await listAccounts();
+  const stored = await readSnapshot(requested);
   const demoOn = process.env.DEMO_DATA !== "off";
 
-  if (!stored && (demoOn || url.searchParams.get("demo") === "1")) {
-    return NextResponse.json(
-      { ...demoSnapshot(), source: "demo" },
-      { headers: { ...CORS, "Cache-Control": "no-store" } }
-    );
+  if (url.searchParams.get("demo") === "1" || (!stored && demoOn)) {
+    return json({ ...demoSnapshot(), accounts, source: "demo" });
   }
-  if (url.searchParams.get("demo") === "1") {
-    return NextResponse.json(
-      { ...demoSnapshot(), source: "demo" },
-      { headers: { ...CORS, "Cache-Control": "no-store" } }
-    );
+  if (!stored) {
+    return json({ empty: true, account: {}, positions: [], deals: [], equityHistory: [], accounts });
   }
-  return NextResponse.json(
-    stored
-      ? { ...stored, source: usingKv ? "kv" : "memory" }
-      : { empty: true, account: {}, positions: [], deals: [], equityHistory: [] },
-    { headers: { ...CORS, "Cache-Control": "no-store" } }
-  );
+  return json({ ...stored, accounts, source: usingKv ? "kv" : "memory" });
 }
 
 export async function POST(req) {
@@ -76,7 +77,8 @@ export async function POST(req) {
     return NextResponse.json({ ok: false, error: e.message }, { status: 400, headers: CORS });
   }
 
-  const previous = await readSnapshot();
+  // Merge against this account's own history, not whoever posted last.
+  const previous = await readSnapshot(snapshot.account.login);
   snapshot.equityHistory = mergeEquityHistory(previous, snapshot);
   const result = await writeSnapshot(snapshot);
 

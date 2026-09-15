@@ -35,6 +35,7 @@ export default function Page() {
   const [rate, setRate] = useState(36.5);
   const [range, setRange] = useState("all");
   const [tab, setTab] = useState("__all__");
+  const [account, setAccount] = useState(null);
   const [interval_, setInterval_] = useState(60);
   const timer = useRef(null);
 
@@ -44,11 +45,13 @@ export default function Page() {
     setRate(load("mt5.rate", 36.5));
     setRange(load("mt5.range", "all"));
     setInterval_(load("mt5.interval", 60));
+    setAccount(load("mt5.account", null));
   }, []);
 
   const fetchData = useCallback(async () => {
     try {
-      const res = await fetch("/api/report", { cache: "no-store" });
+      const qs = account ? `?account=${encodeURIComponent(account)}` : "";
+      const res = await fetch(`/api/report${qs}`, { cache: "no-store" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setRaw(await res.json());
       setError(null);
@@ -57,7 +60,7 @@ export default function Page() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [account]);
 
   useEffect(() => {
     fetchData();
@@ -68,6 +71,17 @@ export default function Page() {
     if (interval_ > 0) timer.current = setInterval(fetchData, interval_ * 1000);
     return () => timer.current && clearInterval(timer.current);
   }, [interval_, fetchData]);
+
+  const accounts = raw?.accounts || [];
+
+  // Pick the newest account on first load, and recover if the selected one
+  // disappears (that bridge stopped reporting, or KV was cleared).
+  useEffect(() => {
+    if (!accounts.length) return;
+    if (!accounts.some((a) => String(a.login) === String(account))) {
+      setAccount(String(accounts[0].login));
+    }
+  }, [accounts, account]);
 
   const T = t(lang);
   const fx = currency === "THB" ? rate : 1;
@@ -187,6 +201,23 @@ export default function Page() {
         </div>
 
         <div className="ml-auto flex flex-wrap items-center gap-2">
+          {accounts.length > 1 && (
+            <select
+              value={account ?? ""}
+              onChange={(e) => {
+                const v = e.target.value;
+                setAccount(v);
+                save("mt5.account", v);
+              }}
+              className="max-w-[240px] rounded-lg border border-white/[0.08] bg-surface2 px-2 py-1.5 text-xs text-ink2 outline-none"
+            >
+              {accounts.map((a) => (
+                <option key={a.login} value={a.login}>
+                  {`#${a.login}${a.name ? ` · ${a.name}` : ""}${a.server ? ` · ${a.server}` : ""}`}
+                </option>
+              ))}
+            </select>
+          )}
           <Segmented
             size="sm"
             options={[{ value: "th", label: "TH" }, { value: "en", label: "EN" }]}
