@@ -1,0 +1,34 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  --font-ui: "Inter", system-ui, -apple-system, "Segoe UI", "Noto Sans Thai", sans-serif;
+}
+
+html,
+body {
+  background: #0d0d0d;
+}
+
+::selection {
+  background: rgba(57, 135, 229, 0.35);
+}
+
+/* thin scrollbars inside tables */
+*::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #2c2c2a;
+  border-radius: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
