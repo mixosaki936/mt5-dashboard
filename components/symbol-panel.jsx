@@ -4,12 +4,11 @@ import { BarChart, LineChart } from "./charts";
 import { Card, Kpi, Pill, Stat } from "./ui";
 import { DealsTable, PositionsTable } from "./tables";
 import { duration, money, num, pct, toneOf } from "@/lib/format";
+import { formatDate, offsetLabel } from "@/lib/time";
 
-export default function SymbolPanel({ s, T, lang, m, color, digitsFor }) {
+export default function SymbolPanel({ s, T, lang, m, color, digitsFor, tzOffset = 0 }) {
   const curvePoints = s.curve.map((c, i) => ({ x: c.t ? new Date(c.t).getTime() : i, y: c.net }));
-  const fmtX = (v, long) =>
-    new Date(v).toLocaleDateString("en-GB",
-      long ? { day: "2-digit", month: "short", year: "2-digit" } : { day: "2-digit", month: "short" });
+  const fmtX = (v, long) => formatDate(v, tzOffset, { year: long });
 
   return (
     <div className="space-y-4">
@@ -74,11 +73,11 @@ export default function SymbolPanel({ s, T, lang, m, color, digitsFor }) {
       </div>
 
       <div className="grid items-start gap-4 lg:grid-cols-3">
-        <Card title={T.byHour} className="lg:col-span-2">
+        <Card title={`${T.byHour} (${offsetLabel(tzOffset)})`} className="lg:col-span-2">
           <BarChart
             height={220}
             data={s.byHour.map((h) => ({
-              label: `${String(h.hour).padStart(2, "0")}:00 UTC`,
+              label: `${String(h.hour).padStart(2, "0")}:00`,
               short: String(h.hour).padStart(2, "0"),
               value: h.net,
               sub: `${h.trades} ${T.trades}`,
@@ -115,12 +114,32 @@ export default function SymbolPanel({ s, T, lang, m, color, digitsFor }) {
         </Card>
       </div>
 
+      <Card title={`${T.byDay} — ${s.symbol}`}>
+        <BarChart
+          height={200}
+          data={s.byDay.map((d) => ({
+            label: d.date,
+            short: d.date.slice(5),
+            value: d.net,
+          }))}
+          formatValue={(v) => m(v)}
+        />
+      </Card>
+
       <Card title={`${T.openPositions} — ${s.symbol}`} subtitle={`${s.positions.length}`}>
-        <PositionsTable rows={s.positions} T={T} m={m} showSymbol={false} digitsFor={digitsFor} />
+        <PositionsTable rows={s.positions} T={T} m={m} showSymbol={false} digitsFor={digitsFor} tzOffset={tzOffset} />
       </Card>
 
       <Card title={`${T.closedDeals} — ${s.symbol}`}>
-        <DealsTable rows={s.deals} T={T} m={m} lang={lang} showSymbol={false} digitsFor={digitsFor} />
+        <DealsTable
+          rows={s.deals}
+          T={T}
+          m={m}
+          lang={lang}
+          showSymbol={false}
+          digitsFor={digitsFor}
+          tzOffset={tzOffset}
+        />
       </Card>
     </div>
   );

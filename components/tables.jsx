@@ -2,7 +2,8 @@
 
 import { useMemo, useState } from "react";
 import { TypeTag } from "./ui";
-import { dateTime, duration, num, toneOf } from "@/lib/format";
+import { duration, num, toneOf } from "@/lib/format";
+import { formatDateTime, stamp } from "@/lib/time";
 
 const th = "px-3 py-2 text-left text-[11px] font-medium uppercase tracking-wide text-muted";
 const td = "px-3 py-2 text-sm text-ink2 whitespace-nowrap";
@@ -43,7 +44,7 @@ function DownloadCsv({ rows, columns, name, label }) {
   );
 }
 
-export function PositionsTable({ rows, T, m, showSymbol = true, digitsFor = () => 2 }) {
+export function PositionsTable({ rows, T, m, showSymbol = true, digitsFor = () => 2, tzOffset = 0 }) {
   if (!rows.length) {
     return <div className="py-6 text-center text-sm text-muted">{T.noOpen}</div>;
   }
@@ -78,7 +79,7 @@ export function PositionsTable({ rows, T, m, showSymbol = true, digitsFor = () =
                 <td className={`${td} text-right tabular-nums text-muted`}>{p.sl ? num(p.sl, dg) : "—"}</td>
                 <td className={`${td} text-right tabular-nums text-muted`}>{p.tp ? num(p.tp, dg) : "—"}</td>
                 <td className={`${td} text-right font-medium tabular-nums ${toneOf(net)}`}>{m(net, true)}</td>
-                <td className={`${td} text-muted`}>{dateTime(p.openTime)}</td>
+                <td className={`${td} text-muted`}>{formatDateTime(p.openTime, tzOffset)}</td>
                 <td className={`${td} text-muted`}>{p.comment || p.magic || "—"}</td>
               </tr>
             );
@@ -89,7 +90,16 @@ export function PositionsTable({ rows, T, m, showSymbol = true, digitsFor = () =
   );
 }
 
-export function DealsTable({ rows, T, m, lang, showSymbol = true, digitsFor = () => 2, pageSize = 20 }) {
+export function DealsTable({
+  rows,
+  T,
+  m,
+  lang,
+  showSymbol = true,
+  digitsFor = () => 2,
+  pageSize = 20,
+  tzOffset = 0,
+}) {
   const [expanded, setExpanded] = useState(false);
   const sorted = useMemo(
     () => [...rows].sort((a, b) => String(b.closeTime).localeCompare(String(a.closeTime))),
@@ -101,8 +111,10 @@ export function DealsTable({ rows, T, m, lang, showSymbol = true, digitsFor = ()
     return <div className="py-6 text-center text-sm text-muted">{T.noDeals}</div>;
   }
 
+  // Exported on the same clock the table shows, not raw UTC.
   const csvColumns = [
-    { key: "closeTime" },
+    { key: "closeTime", raw: (r) => stamp(r.closeTime, tzOffset) },
+    { key: "openTime", raw: (r) => stamp(r.openTime, tzOffset) },
     { key: "symbol" },
     { key: "type" },
     { key: "volume" },
@@ -148,7 +160,7 @@ export function DealsTable({ rows, T, m, lang, showSymbol = true, digitsFor = ()
                   key={d.ticket ?? i}
                   className="border-b border-hair/60 last:border-0 hover:bg-white/[0.03]"
                 >
-                  <td className={`${td} text-muted`}>{dateTime(d.closeTime)}</td>
+                  <td className={`${td} text-muted`}>{formatDateTime(d.closeTime, tzOffset)}</td>
                   {showSymbol && <td className={`${td} font-medium text-ink`}>{d.symbol}</td>}
                   <td className={td}><TypeTag type={d.type} /></td>
                   <td className={`${td} text-right tabular-nums`}>{num(d.volume, 2)}</td>

@@ -3,13 +3,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { buildModel, filterDealsByRange } from "@/lib/stats";
 import { t } from "@/lib/i18n";
-import { colorFor, dateTime, duration, money, num, pct, relative, toneOf } from "@/lib/format";
+import { colorFor, duration, money, num, pct, relative, toneOf } from "@/lib/format";
+import {
+  formatDate,
+  formatDateTime,
+  offsetLabel,
+  resolveOffset,
+  THAI_OFFSET_MIN,
+  TZ_SETTINGS,
+} from "@/lib/time";
 import { BarChart, Donut, LineChart } from "@/components/charts";
 import { Card, Kpi, Pill, Segmented, Stat } from "@/components/ui";
 import { DealsTable, PositionsTable } from "@/components/tables";
+import TradingCalendar from "@/components/calendar";
 import SymbolPanel from "@/components/symbol-panel";
 
-const RANGES = ["all", "today", "7d", "30d", "90d", "mtd"];
+const RANGES = ["all", "today", "wtd", "7d", "30d", "90d", "mtd"];
 const INTERVALS = [0, 30, 60, 300];
 
 const load = (k, d) => {
@@ -32,20 +41,30 @@ export default function Page() {
   const [loading, setLoading] = useState(true);
   const [lang, setLang] = useState("th");
   const [currency, setCurrency] = useState("USD");
-  const [rate, setRate] = useState(36.5);
+  const [rate, setRate] = useState(36.5);          // เรตที่กรอกเอง
+  const [rateMode, setRateMode] = useState("auto");
+  const [autoFx, setAutoFx] = useState(null);      // { rate, source, at } จาก /api/fx
   const [range, setRange] = useState("all");
   const [tab, setTab] = useState("__all__");
   const [account, setAccount] = useState(null);
   const [interval_, setInterval_] = useState(60);
+  // Which clock the trading day is counted on — "auto" follows the broker.
+  const [tz, setTz] = useState("auto");
+  // Day picked in the calendar ("YYYY-MM-DD" on the market clock), or null.
+  const [calDay, setCalDay] = useState(null);
   const timer = useRef(null);
 
   useEffect(() => {
     setLang(load("mt5.lang", "th"));
     setCurrency(load("mt5.currency", "USD"));
     setRate(load("mt5.rate", 36.5));
+    setRateMode(load("mt5.rateMode", "auto"));
     setRange(load("mt5.range", "all"));
     setInterval_(load("mt5.interval", 60));
     setAccount(load("mt5.account", null));
+    // "auto" = the broker's clock; anything else stored by an older build is stale
+    const savedTz = load("mt5.tz", "auto");
+    setTz(TZ_SETTINGS.includes(savedTz) ? savedTz : "auto");
   }, []);
 
   const fetchData = useCallback(async () => {
@@ -84,13 +103,49 @@ export default function Page() {
   }, [accounts, account]);
 
   const T = t(lang);
-  const fx = currency === "THB" ? rate : 1;
+  const serverOffset = raw?.account?.serverOffsetMin;
+  const tzOffset = resolveOffset(tz, Number.isFinite(serverOffset) ? serverOffset : null);
+  const tzName = offsetLabel(tzOffset);
+  // เรตบาท: ฟีดโบรก > แหล่งออนไลน์ > ที่กรอกเอง
+  const brokerFx = Number.isFinite(raw?.usdThb) ? raw.usdThb : null;
+  const lookedUpFx = brokerFx ?? (Number.isFinite(autoFx?.rate) ? autoFx.rate : null);
+  const fxRate = rateMode === "auto" && lookedUpFx ? lookedUpFx : rate;
+  const fxSource =
+    rateMode === "manual" || !lookedUpFx
+      ? T.fxTyped
+      : brokerFx
+      ? `${T.fxFromBroker} · ${formatDateTime(raw?.updatedAt, tzOffset)}`
+      : `${autoFx.source}${autoFx.at ? ` · ${autoFx.at}` : ""}`;
+  const fx = currency === "THB" ? fxRate : 1;
   const m = useCallback(
     (v, sign = false) => money(v, { currency, rate: fx, sign }),
     [currency, fx]
   );
 
-  const model = useMemo(() => (raw ? buildModel(raw, { range }) : null), [raw, range]);
+  // ไม่ต้องไปถามเรตถ้าฝั่ง MT5 ส่งมาแล้ว หรือผู้ใช้กรอกเอง
+  useEffect(() => {
+    if (currency !== "THB" || rateMode !== "auto" || brokerFx) return;
+    let alive = true;
+    fetch("/api/fx")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        if (alive && Number.isFinite(j?.rate)) setAutoFx(j);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [currency, rateMode, brokerFx]);
+
+  // A day key belongs to the clock it was cut on, so drop it when that changes.
+  useEffect(() => {
+    setCalDay(null);
+  }, [tzOffset, account]);
+
+  const model = useMemo(
+    () => (raw ? buildModel(raw, { range, offsetMin: tzOffset }) : null),
+    [raw, range, tzOffset]
+  );
 
   const digitsFor = useCallback(
     (symbol) => {
@@ -112,7 +167,9 @@ export default function Page() {
     if (!model) return [];
     const hist = filterDealsByRange(
       (model.equityHistory || []).map((p) => ({ ...p, closeTime: p.t })),
-      range
+      range,
+      new Date(),
+      tzOffset
     );
     if (hist.length > 1) {
       return [
@@ -142,13 +199,10 @@ export default function Page() {
       ];
     }
     return [];
-  }, [model, range, T]);
+  }, [model, range, T, tzOffset]);
 
   const fmtX = (v, long) =>
-    new Date(v).toLocaleDateString("en-GB",
-      long
-        ? { day: "2-digit", month: "short", year: "2-digit", hour: "2-digit", minute: "2-digit" }
-        : { day: "2-digit", month: "short" });
+    long ? formatDateTime(v, tzOffset) : formatDate(v, tzOffset);
 
   if (loading) {
     return (
@@ -196,7 +250,8 @@ export default function Page() {
             )}
           </p>
           <p className="mt-0.5 text-xs text-muted">
-            {T.updated} {dateTime(model?.updatedAt, { withSeconds: true })} ({relative(model?.updatedAt, lang)})
+            {T.updated} {formatDateTime(model?.updatedAt, tzOffset, { withSeconds: true })} {tzName}{" "}
+            ({relative(model?.updatedAt, lang)})
           </p>
         </div>
 
@@ -231,21 +286,52 @@ export default function Page() {
             onChange={(v) => { setCurrency(v); save("mt5.currency", v); }}
           />
           {currency === "THB" && (
-            <label className="flex items-center gap-1 rounded-lg border border-white/[0.08] bg-surface2 px-2 py-1 text-[11px] text-muted">
+            <div
+              title={`${T.fxRate} USD→THB · ${fxSource}`}
+              className="flex items-center gap-1.5 rounded-lg border border-white/[0.08] bg-surface2 px-2 py-1 text-[11px] text-muted"
+            >
               {T.fxRate}
-              <input
-                type="number"
-                step="0.1"
-                value={rate}
-                onChange={(e) => {
-                  const v = parseFloat(e.target.value) || 0;
-                  setRate(v);
-                  save("mt5.rate", v);
+              {rateMode === "auto" && lookedUpFx ? (
+                <span className="tabular-nums text-ink">{num(fxRate, 3)}</span>
+              ) : (
+                <input
+                  type="number"
+                  step="0.1"
+                  value={rate}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value) || 0;
+                    setRate(v);
+                    save("mt5.rate", v);
+                  }}
+                  className="w-16 bg-transparent text-right text-ink outline-none"
+                />
+              )}
+              <button
+                onClick={() => {
+                  const next = rateMode === "auto" ? "manual" : "auto";
+                  // ออกจากโหมดอัตโนมัติ ให้เริ่มจากเรตที่เห็นอยู่ ไม่ใช่ค่าเก่าค้างในเครื่อง
+                  if (next === "manual" && lookedUpFx) {
+                    setRate(fxRate);
+                    save("mt5.rate", fxRate);
+                  }
+                  setRateMode(next);
+                  save("mt5.rateMode", next);
                 }}
-                className="w-16 bg-transparent text-right text-ink outline-none"
-              />
-            </label>
+                className="rounded border border-white/[0.08] px-1.5 py-0.5 text-[10px] text-muted transition hover:bg-white/[0.08] hover:text-ink"
+              >
+                {rateMode === "auto" ? T.fxManual : T.fxAuto}
+              </button>
+            </div>
           )}
+          <Segmented
+            size="sm"
+            options={[
+              { value: "auto", label: T.tzMarket },
+              { value: String(THAI_OFFSET_MIN), label: T.tzThai },
+            ]}
+            value={tz}
+            onChange={(v) => { setTz(v); save("mt5.tz", v); }}
+          />
           <select
             value={interval_}
             onChange={(e) => {
@@ -297,6 +383,9 @@ export default function Page() {
               value={range}
               onChange={(v) => { setRange(v); save("mt5.range", v); }}
             />
+            <span className="text-[11px] text-muted">
+              {T.tzNote} ({tzName})
+            </span>
           </div>
 
           {/* ---------- pair tabs ---------- */}
@@ -357,7 +446,11 @@ export default function Page() {
                   label={T.growth}
                   value={pct(p.growth, 2, true)}
                   tone={p.growth > 0 ? "pos" : p.growth < 0 ? "neg" : "neutral"}
-                  sub={`${T.trades} ${p.trades}`}
+                  sub={
+                    range === "all"
+                      ? `${T.trades} ${p.trades}`
+                      : `${T.trades} ${p.trades} · ${T.growthBase} ${m(p.base)}`
+                  }
                 />
                 <Kpi
                   label={T.winRate}
@@ -483,38 +576,37 @@ export default function Page() {
                 </div>
               </Card>
 
-              <div className="grid items-start gap-4 lg:grid-cols-3">
-                <Card title={T.byDay} className="lg:col-span-2">
-                  <BarChart
-                    height={200}
-                    data={p.byDay.map((d) => ({
-                      label: d.date,
-                      short: d.date.slice(5),
-                      value: d.net,
-                    }))}
-                    formatValue={(v) => m(v)}
-                  />
-                </Card>
-                <Card title={T.deepStats}>
-                  <Stat label={T.grossProfit} value={m(p.grossProfit)} tone="pos" />
-                  <Stat label={T.grossLoss} value={m(-p.grossLoss)} tone="neg" />
-                  <Stat label={T.avgWin} value={m(p.avgWin)} tone="pos" />
-                  <Stat label={T.avgLoss} value={m(-p.avgLoss)} tone="neg" />
-                  <Stat label={T.expectancy} value={m(p.expectancy, true)} />
-                  <Stat label={T.avgHold} value={duration(p.avgHoldMin, lang)} />
-                  <Stat label={T.totalLots} value={num(p.volume, 2)} />
-                  <Stat label={T.margin} value={m(acc.margin)} />
-                  <Stat label={T.freeMargin} value={m(acc.freeMargin)} />
-                  <Stat label={T.marginLevel} value={acc.marginLevel ? pct(acc.marginLevel, 0) : "—"} />
-                </Card>
-              </div>
+              <TradingCalendar
+                deals={raw?.deals || []}
+                T={T}
+                lang={lang}
+                m={m}
+                tzOffset={tzOffset}
+                digitsFor={digitsFor}
+                selected={calDay}
+                onSelect={setCalDay}
+              />
+
+              {/* the calendar takes the full width, so these run in columns instead */}
+              <Card title={T.deepStats} bodyClass="p-4 grid gap-x-6 sm:grid-cols-2 lg:grid-cols-3">
+                <Stat label={T.grossProfit} value={m(p.grossProfit)} tone="pos" />
+                <Stat label={T.grossLoss} value={m(-p.grossLoss)} tone="neg" />
+                <Stat label={T.avgWin} value={m(p.avgWin)} tone="pos" />
+                <Stat label={T.avgLoss} value={m(-p.avgLoss)} tone="neg" />
+                <Stat label={T.expectancy} value={m(p.expectancy, true)} />
+                <Stat label={T.avgHold} value={duration(p.avgHoldMin, lang)} />
+                <Stat label={T.totalLots} value={num(p.volume, 2)} />
+                <Stat label={T.margin} value={m(acc.margin)} />
+                <Stat label={T.freeMargin} value={m(acc.freeMargin)} />
+                <Stat label={T.marginLevel} value={acc.marginLevel ? pct(acc.marginLevel, 0) : "—"} />
+              </Card>
 
               <Card title={T.openPositions} subtitle={`${p.openCount} · ${num(p.openLots, 2)} lot`}>
-                <PositionsTable rows={model.positions} T={T} m={m} digitsFor={digitsFor} />
+                <PositionsTable rows={model.positions} T={T} m={m} digitsFor={digitsFor} tzOffset={tzOffset} />
               </Card>
 
               <Card title={T.closedDeals}>
-                <DealsTable rows={model.deals} T={T} m={m} lang={lang} digitsFor={digitsFor} />
+                <DealsTable rows={model.deals} T={T} m={m} lang={lang} digitsFor={digitsFor} tzOffset={tzOffset} />
               </Card>
             </div>
           ) : (
@@ -529,6 +621,7 @@ export default function Page() {
                   m={m}
                   color={symbolColor(s.symbol)}
                   digitsFor={digitsFor}
+                  tzOffset={tzOffset}
                 />
               );
             })()
@@ -537,7 +630,7 @@ export default function Page() {
       )}
 
       <footer className="mt-8 border-t border-hair pt-4 text-[11px] text-muted">
-        MT5 Portfolio Dashboard · {T.updated} {dateTime(model?.updatedAt)} ·{" "}
+        MT5 Portfolio Dashboard · {T.updated} {formatDateTime(model?.updatedAt, tzOffset)} {tzName} ·{" "}
         {raw?.source === "kv" ? "Vercel KV" : raw?.source === "demo" ? T.demo : "memory store"}
       </footer>
     </main>
