@@ -19,7 +19,7 @@ input int    InpHistoryDays     = 120;       // ดึงประวัติ�
 input double InpInitialDeposit  = 0;         // ทุนเริ่มต้น (0 = คำนวณอัตโนมัติ)
 input bool   InpVerbose         = true;      // พิมพ์ log ทุกครั้งที่ส่ง
 
-long g_tz_offset = 0;   // server time -> UTC
+long g_tz_offset = 0;   // server time -> UTC (seconds; re-read every report so DST is picked up)
 
 //+------------------------------------------------------------------+
 int OnInit()
@@ -184,6 +184,9 @@ string BuildDeals(double &closed_net)
 //+------------------------------------------------------------------+
 string BuildJson()
 {
+   // Broker clocks shift with DST, so refresh the offset on every report.
+   g_tz_offset = (long)TimeTradeServer() - (long)TimeGMT();
+
    double closed_net = 0.0;
    string deals = BuildDeals(closed_net);
    string positions = BuildPositions();
@@ -204,11 +207,14 @@ string BuildJson()
    acc += N("margin", AccountInfoDouble(ACCOUNT_MARGIN), 2) + ",";
    acc += N("freeMargin", AccountInfoDouble(ACCOUNT_MARGIN_FREE), 2) + ",";
    acc += N("marginLevel", AccountInfoDouble(ACCOUNT_MARGIN_LEVEL), 2) + ",";
-   acc += N("initialDeposit", initial, 2);
+   acc += N("initialDeposit", initial, 2) + ",";
+   // Dashboard counts the trading day on this clock (server midnight = 17:00 New York).
+   acc += L("tzOffsetMin", g_tz_offset / 60);
    acc += "}";
 
    string json = "{";
    json += L("updatedAt", ToUtc(TimeCurrent())) + ",";
+   json += L("tzOffsetMin", g_tz_offset / 60) + ",";
    json += "\"account\":" + acc + ",";
    json += "\"positions\":" + positions + ",";
    json += "\"deals\":" + deals;
