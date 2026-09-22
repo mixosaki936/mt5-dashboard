@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { buildModel, filterDealsByRange } from "@/lib/stats";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { buildModel, customDays, customRange, filterDealsByRange, isCustom } from "@/lib/stats";
 import { t } from "@/lib/i18n";
 import { colorFor, duration, money, num, pct, relative, toneOf } from "@/lib/format";
 import {
+  dayKey,
   formatDate,
   formatDateTime,
   offsetLabel,
@@ -18,7 +19,7 @@ import { DealsTable, PositionsTable } from "@/components/tables";
 import TradingCalendar from "@/components/calendar";
 import SymbolPanel from "@/components/symbol-panel";
 
-const RANGES = ["all", "today", "wtd", "7d", "30d", "90d", "mtd"];
+const RANGES = ["all", "today", "wtd", "7d", "30d", "90d", "mtd", "custom"];
 const INTERVALS = [0, 30, 60, 300];
 
 const load = (k, d) => {
@@ -106,6 +107,15 @@ export default function Page() {
   const serverOffset = raw?.account?.serverOffsetMin;
   const tzOffset = resolveOffset(tz, Number.isFinite(serverOffset) ? serverOffset : null);
   const tzName = offsetLabel(tzOffset);
+  const picked = customDays(range);
+  // ปฏิทินของ input ไม่ควรให้เลือกเลยวันที่มีข้อมูล
+  const dayRange = useMemo(() => {
+    const days = (raw?.deals || [])
+      .map((d) => d.closeTime && dayKey(d.closeTime, tzOffset))
+      .filter(Boolean)
+      .sort();
+    return { first: days[0] || null, last: dayKey(new Date(), tzOffset) };
+  }, [raw, tzOffset]);
   // เรตบาท: ฟีดโบรก > แหล่งออนไลน์ > ที่กรอกเอง
   const brokerFx = Number.isFinite(raw?.usdThb) ? raw.usdThb : null;
   const lookedUpFx = brokerFx ?? (Number.isFinite(autoFx?.rate) ? autoFx.rate : null);
@@ -380,9 +390,47 @@ export default function Page() {
             <Segmented
               size="sm"
               options={RANGES.map((r) => ({ value: r, label: T.ranges[r] }))}
-              value={range}
-              onChange={(v) => { setRange(v); save("mt5.range", v); }}
+              value={isCustom(range) ? "custom" : range}
+              onChange={(v) => {
+                // เริ่มช่วงกำหนดเองที่ 30 วันล่าสุด ให้มีอะไรให้ดูทันที
+                const next =
+                  v !== "custom"
+                    ? v
+                    : customRange(
+                        dayKey(new Date(Date.now() - 30 * 864e5), tzOffset),
+                        dayKey(new Date(), tzOffset)
+                      );
+                setRange(next);
+                save("mt5.range", next);
+              }}
             />
+            {isCustom(range) && (
+              <div className="flex items-center gap-1.5 rounded-lg border border-white/[0.08] bg-surface2 px-2 py-1 text-[11px] text-muted">
+                {["from", "to"].map((side) => (
+                  <Fragment key={side}>
+                    {side === "to" && <span>–</span>}
+                    <input
+                      type="date"
+                      value={side === "from" ? picked.from : picked.to}
+                      min={side === "to" ? picked.from || dayRange.first : dayRange.first}
+                      max={side === "from" ? picked.to || dayRange.last : dayRange.last}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        if (!v) return;
+                        const next =
+                          side === "from"
+                            ? customRange(v, picked.to < v ? v : picked.to)
+                            : customRange(picked.from > v ? v : picked.from, v);
+                        setRange(next);
+                        save("mt5.range", next);
+                      }}
+                      className="bg-transparent text-ink outline-none [color-scheme:dark]"
+                      aria-label={side === "from" ? T.dateFrom : T.dateTo}
+                    />
+                  </Fragment>
+                ))}
+              </div>
+            )}
             <span className="text-[11px] text-muted">
               {T.tzNote} ({tzName})
             </span>
