@@ -5,8 +5,10 @@
 // Deliberately ignores the page's range filter: it has its own month navigation,
 // so "today" or "7 days" would otherwise leave it almost empty. It aggregates
 // straight from the full deal list, cut on the same market-day boundary as the
-// rest of the dashboard, and its week runs Monday→Sunday to match the
-// "this week" range.
+// rest of the dashboard. Rows run Sunday→Saturday like an ordinary calendar;
+// the trading week itself is Monday→Friday in market time (the market opens
+// Sunday 17:00 New York, which is already Monday on the broker's clock), so
+// both weekend columns stay empty and a row's total is the trading week's.
 
 import { useMemo, useState } from "react";
 import { Card } from "./ui";
@@ -24,11 +26,11 @@ function addMonths(ym, delta) {
   return new Date(Date.UTC(y, m - 1 + delta, 1)).toISOString().slice(0, 7);
 }
 
-/** Monday-first weekday headers, read off a week that starts on a Monday. */
+/** Weekday headers, read off a week that starts on a Sunday. */
 function weekdayNames(lang) {
-  const monday = Date.UTC(2024, 0, 1); // 1 Jan 2024 was a Monday
+  const sunday = Date.UTC(2024, 0, 7); // 7 Jan 2024 was a Sunday
   return Array.from({ length: 7 }, (_, i) =>
-    new Date(monday + i * 864e5).toLocaleDateString(localeOf(lang), {
+    new Date(sunday + i * 864e5).toLocaleDateString(localeOf(lang), {
       weekday: "short",
       timeZone: "UTC",
     })
@@ -78,7 +80,7 @@ export default function TradingCalendar({
   const { weeks, stats } = useMemo(() => {
     const [y, mo] = month.split("-").map(Number);
     const daysInMonth = new Date(Date.UTC(y, mo, 0)).getUTCDate();
-    const lead = (new Date(Date.UTC(y, mo - 1, 1)).getUTCDay() + 6) % 7; // Monday = 0
+    const lead = new Date(Date.UTC(y, mo - 1, 1)).getUTCDay(); // Sunday = 0
 
     const cells = Array.from({ length: lead }, () => null);
     for (let day = 1; day <= daysInMonth; day += 1) {
