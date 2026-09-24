@@ -626,6 +626,7 @@ export default function Page() {
 
               <TradingCalendar
                 deals={raw?.deals || []}
+                initial={acc.initialDeposit || 0}
                 T={T}
                 lang={lang}
                 m={m}

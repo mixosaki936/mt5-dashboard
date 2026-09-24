@@ -9,13 +9,17 @@
 // the trading week itself is Monday→Friday in market time (the market opens
 // Sunday 17:00 New York, which is already Monday on the broker's clock), so
 // both weekend columns stay empty and a row's total is the trading week's.
+//
+// Each day's drawdown is walked over its closed trades from the balance the day
+// opened with — the only history that exists for every day. It leaves out dips
+// in trades that were still open, so it is a floor on the real figure.
 
 import { useMemo, useState } from "react";
 import { Card } from "./ui";
 import { DealsTable } from "./tables";
-import { netOf } from "@/lib/stats";
+import { netOf, statsFor } from "@/lib/stats";
 import { dayKey } from "@/lib/time";
-import { toneOf } from "@/lib/format";
+import { num, pct, toneOf } from "@/lib/format";
 
 const localeOf = (lang) => (lang === "th" ? "th-TH-u-ca-gregory" : "en-GB");
 
@@ -37,8 +41,11 @@ function weekdayNames(lang) {
   );
 }
 
+const pf = (st) => (st.profitFactor === null ? "∞" : num(st.profitFactor, 2));
+
 export default function TradingCalendar({
   deals,
+  initial = 0,
   T,
   lang,
   m,
@@ -47,23 +54,37 @@ export default function TradingCalendar({
   selected,
   onSelect,
 }) {
-  // day key -> { net, trades, wins, losses }
+  // day key -> { net, trades, wins, losses, list } — deals arrive sorted by close
   const byDay = useMemo(() => {
     const map = new Map();
     for (const d of deals) {
       if (!d.closeTime) continue;
       const key = dayKey(d.closeTime, tzOffset);
       if (!key) continue;
-      const e = map.get(key) || { net: 0, trades: 0, wins: 0, losses: 0 };
+      const e = map.get(key) || { net: 0, trades: 0, wins: 0, losses: 0, list: [] };
       const n = netOf(d);
       e.net += n;
       e.trades += 1;
       if (n > 0) e.wins += 1;
       else if (n < 0) e.losses += 1;
+      e.list.push(d);
       map.set(key, e);
     }
     return map;
   }, [deals, tzOffset]);
+
+  // Per-day stat block (win rate, PF, max DD), walked from the balance each day
+  // opened with — worked out the same way as the growth figure's base.
+  const dayStats = useMemo(() => {
+    const out = new Map();
+    let open = initial;
+    for (const k of [...byDay.keys()].sort()) {
+      const e = byDay.get(k);
+      out.set(k, statsFor(e.list, open, 0, tzOffset));
+      open += e.net;
+    }
+    return out;
+  }, [byDay, initial, tzOffset]);
 
   const keys = useMemo(() => [...byDay.keys()].sort(), [byDay]);
   const todayKey = dayKey(new Date(), tzOffset);
@@ -85,7 +106,16 @@ export default function TradingCalendar({
     const cells = Array.from({ length: lead }, () => null);
     for (let day = 1; day <= daysInMonth; day += 1) {
       const key = `${month}-${String(day).padStart(2, "0")}`;
-      cells.push({ day, key, net: 0, trades: 0, wins: 0, losses: 0, ...byDay.get(key) });
+      const e = byDay.get(key);
+      cells.push({
+        day,
+        key,
+        net: e?.net || 0,
+        trades: e?.trades || 0,
+        wins: e?.wins || 0,
+        losses: e?.losses || 0,
+        st: dayStats.get(key) || null,
+      });
     }
     while (cells.length % 7) cells.push(null);
 
@@ -104,7 +134,7 @@ export default function TradingCalendar({
         peak: Math.max(0, ...nets.map(Math.abs)),
       },
     };
-  }, [month, byDay]);
+  }, [month, byDay, dayStats]);
 
   // Shade by how big the day was, not just by its sign — a +$0.50 day should not
   // look the same as a +$50 one.
@@ -139,9 +169,8 @@ export default function TradingCalendar({
     "rounded-lg border border-white/[0.08] bg-surface2 px-2.5 py-1 text-sm text-ink2 transition enabled:hover:bg-white/[0.08] enabled:hover:text-ink disabled:opacity-30";
 
   const selectedDay = selected ? byDay.get(selected) : null;
-  const selectedDeals = selected
-    ? deals.filter((d) => d.closeTime && dayKey(d.closeTime, tzOffset) === selected)
-    : [];
+  const selectedStats = selected ? dayStats.get(selected) : null;
+  const selectedDeals = selectedDay ? selectedDay.list : [];
 
   return (
     <Card
@@ -227,6 +256,7 @@ export default function TradingCalendar({
                         cell.trades && onSelect(selected === cell.key ? null : cell.key)
                       }
                       disabled={!cell.trades}
+                      title={cell.trades ? T.dayCellTip : undefined}
                       style={{ background: tint(cell.net) }}
                       className={`min-h-[84px] rounded-lg border p-2 text-left transition ${
                         selected === cell.key
@@ -248,21 +278,38 @@ export default function TradingCalendar({
                         {cell.day}
                       </div>
                       {cell.trades > 0 && (
-                        <>
-                          <div
-                            className={`mt-1 whitespace-nowrap text-[12px] font-semibold leading-tight tabular-nums ${toneOf(
-                              cell.net
-                            )}`}
-                          >
-                            {m(cell.net, true)}
+                        // side by side when the square is wide enough; on a
+                        // narrow screen the right-hand block drops underneath
+                        <div className="mt-1 flex flex-wrap items-start justify-between gap-x-2 gap-y-1">
+                          <div>
+                            <div
+                              className={`whitespace-nowrap text-[12px] font-semibold leading-tight tabular-nums ${toneOf(
+                                cell.net
+                              )}`}
+                            >
+                              {m(cell.net, true)}
+                            </div>
+                            <div className="mt-0.5 text-[10px] leading-tight text-ink2">
+                              {cell.trades} {T.tradesShort}
+                            </div>
+                            <div className="text-[10px] leading-tight text-muted">
+                              {cell.wins}W · {cell.losses}L
+                            </div>
                           </div>
-                          <div className="mt-0.5 text-[10px] leading-tight text-ink2">
-                            {cell.trades} {T.tradesShort}
-                          </div>
-                          <div className="text-[10px] leading-tight text-muted">
-                            {cell.wins}W · {cell.losses}L
-                          </div>
-                        </>
+                          {cell.st && (
+                            <div className="ml-auto text-right text-[10px] leading-tight tabular-nums">
+                              <div className="whitespace-nowrap text-ink2">
+                                {T.pfShort} {pf(cell.st)}
+                              </div>
+                              {/* label and amount may split onto two lines in a narrow square */}
+                              <div className="mt-0.5 text-muted">
+                                <span className="whitespace-nowrap">{T.maxDDShort}</span>{" "}
+                                <span className="whitespace-nowrap">{m(cell.st.maxDD)}</span>
+                              </div>
+                              <div className="whitespace-nowrap text-muted">{pct(cell.st.maxDDPct, 2)}</div>
+                            </div>
+                          )}
+                        </div>
                       )}
                     </button>
                   )
@@ -283,20 +330,28 @@ export default function TradingCalendar({
         </div>
       </div>
 
-      {selected && (
+      {selected && selectedDay && (
         <div className="mt-4 border-t border-hair pt-3">
-          <div className="mb-2 flex flex-wrap items-center gap-2">
+          <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1">
             <span className="text-sm font-medium text-ink">{dayLabel(selected)}</span>
-            {selectedDay && (
-              <>
-                <span className={`text-sm font-semibold tabular-nums ${toneOf(selectedDay.net)}`}>
-                  {m(selectedDay.net, true)}
+            <span className={`text-sm font-semibold tabular-nums ${toneOf(selectedDay.net)}`}>
+              {m(selectedDay.net, true)}
+            </span>
+            <span className="text-[11px] text-muted">
+              {selectedDay.trades} {T.tradesShort} · {selectedDay.wins}W · {selectedDay.losses}L
+            </span>
+            {selectedStats && (
+              <span className="text-[11px] text-muted">
+                {" · "}
+                {T.winRate} <span className="tabular-nums text-ink2">{pct(selectedStats.winRate, 1)}</span>
+                {" · "}
+                {T.profitFactor} <span className="tabular-nums text-ink2">{pf(selectedStats)}</span>
+                {" · "}
+                {T.maxDD}{" "}
+                <span className="tabular-nums text-ink2">
+                  {m(selectedStats.maxDD)} ({pct(selectedStats.maxDDPct, 2)})
                 </span>
-                <span className="text-[11px] text-muted">
-                  {selectedDay.trades} {T.tradesShort} · {selectedDay.wins}W ·{" "}
-                  {selectedDay.losses}L
-                </span>
-              </>
+              </span>
             )}
             <button
               onClick={() => onSelect(null)}
