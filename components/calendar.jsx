@@ -43,6 +43,23 @@ function weekdayNames(lang) {
 
 const pf = (st) => (st.profitFactor === null ? "∞" : num(st.profitFactor, 2));
 
+/** PF and max drawdown, right-aligned beside a square's own figures. */
+function RiskBlock({ st, T, m }) {
+  return (
+    <div className="ml-auto text-right text-[10px] leading-tight tabular-nums">
+      <div className="whitespace-nowrap text-ink2">
+        {T.pfShort} {pf(st)}
+      </div>
+      {/* label and amount may split onto two lines in a narrow square */}
+      <div className="mt-0.5 text-muted">
+        <span className="whitespace-nowrap">{T.maxDDShort}</span>{" "}
+        <span className="whitespace-nowrap">{m(st.maxDD)}</span>
+      </div>
+      <div className="whitespace-nowrap text-muted">{pct(st.maxDDPct, 2)}</div>
+    </div>
+  );
+}
+
 export default function TradingCalendar({
   deals,
   initial = 0,
@@ -75,15 +92,17 @@ export default function TradingCalendar({
 
   // Per-day stat block (win rate, PF, max DD), walked from the balance each day
   // opened with — worked out the same way as the growth figure's base.
-  const dayStats = useMemo(() => {
-    const out = new Map();
-    let open = initial;
+  const { dayStats, openBal } = useMemo(() => {
+    const stats = new Map();
+    const open = new Map();
+    let run = initial;
     for (const k of [...byDay.keys()].sort()) {
       const e = byDay.get(k);
-      out.set(k, statsFor(e.list, open, 0, tzOffset));
-      open += e.net;
+      open.set(k, run);
+      stats.set(k, statsFor(e.list, run, 0, tzOffset));
+      run += e.net;
     }
-    return out;
+    return { dayStats: stats, openBal: open };
   }, [byDay, initial, tzOffset]);
 
   const keys = useMemo(() => [...byDay.keys()].sort(), [byDay]);
@@ -120,7 +139,20 @@ export default function TradingCalendar({
     while (cells.length % 7) cells.push(null);
 
     const rows = [];
-    for (let i = 0; i < cells.length; i += 7) rows.push(cells.slice(i, i + 7));
+    for (let i = 0; i < cells.length; i += 7) {
+      const row = cells.slice(i, i + 7);
+      const days = row.filter((c) => c && c.trades);
+      rows.push({
+        cells: row,
+        net: days.reduce((sum, c) => sum + c.net, 0),
+        trades: days.reduce((sum, c) => sum + c.trades, 0),
+        // One walk over the whole week's trades from the balance it opened with —
+        // not the worst of its days, which would miss a slide spread over several.
+        st: days.length
+          ? statsFor(days.flatMap((c) => byDay.get(c.key).list), openBal.get(days[0].key), 0, tzOffset)
+          : null,
+      });
+    }
 
     const traded = cells.filter((c) => c && c.trades);
     const nets = traded.map((c) => c.net);
@@ -134,7 +166,7 @@ export default function TradingCalendar({
         peak: Math.max(0, ...nets.map(Math.abs)),
       },
     };
-  }, [month, byDay, dayStats]);
+  }, [month, byDay, dayStats, openBal, tzOffset]);
 
   // Shade by how big the day was, not just by its sign — a +$0.50 day should not
   // look the same as a +$50 one.
@@ -241,92 +273,86 @@ export default function TradingCalendar({
             {T.week}
           </div>
 
-          {weeks.map((week, wi) => {
-            const weekNet = week.reduce((s, c) => s + (c?.net || 0), 0);
-            const weekTrades = week.reduce((s, c) => s + (c?.trades || 0), 0);
-            return (
-              <Row key={wi}>
-                {week.map((cell, ci) =>
-                  !cell ? (
-                    <div key={ci} className="min-h-[84px] rounded-lg" />
-                  ) : (
-                    <button
-                      key={cell.key}
-                      onClick={() =>
-                        cell.trades && onSelect(selected === cell.key ? null : cell.key)
-                      }
-                      disabled={!cell.trades}
-                      title={cell.trades ? T.dayCellTip : undefined}
-                      style={{ background: tint(cell.net) }}
-                      className={`min-h-[84px] rounded-lg border p-2 text-left transition ${
-                        selected === cell.key
-                          ? "border-s1 ring-1 ring-s1"
-                          : cell.key === todayKey
-                          ? "border-line"
-                          : "border-white/[0.06]"
-                      } ${
-                        cell.trades
-                          ? "cursor-pointer hover:border-white/25"
-                          : "cursor-default bg-surface2/40"
+          {weeks.map((week, wi) => (
+            <Row key={wi}>
+              {week.cells.map((cell, ci) =>
+                !cell ? (
+                  <div key={ci} className="min-h-[84px] rounded-lg" />
+                ) : (
+                  <button
+                    key={cell.key}
+                    onClick={() =>
+                      cell.trades && onSelect(selected === cell.key ? null : cell.key)
+                    }
+                    disabled={!cell.trades}
+                    title={cell.trades ? T.dayCellTip : undefined}
+                    style={{ background: tint(cell.net) }}
+                    className={`min-h-[84px] rounded-lg border p-2 text-left transition ${
+                      selected === cell.key
+                        ? "border-s1 ring-1 ring-s1"
+                        : cell.key === todayKey
+                        ? "border-line"
+                        : "border-white/[0.06]"
+                    } ${
+                      cell.trades
+                        ? "cursor-pointer hover:border-white/25"
+                        : "cursor-default bg-surface2/40"
+                    }`}
+                  >
+                    <div
+                      className={`text-[11px] tabular-nums ${
+                        cell.key === todayKey ? "font-semibold text-ink" : "text-muted"
                       }`}
                     >
-                      <div
-                        className={`text-[11px] tabular-nums ${
-                          cell.key === todayKey ? "font-semibold text-ink" : "text-muted"
-                        }`}
-                      >
-                        {cell.day}
-                      </div>
-                      {cell.trades > 0 && (
-                        // side by side when the square is wide enough; on a
-                        // narrow screen the right-hand block drops underneath
-                        <div className="mt-1 flex flex-wrap items-start justify-between gap-x-2 gap-y-1">
-                          <div>
-                            <div
-                              className={`whitespace-nowrap text-[12px] font-semibold leading-tight tabular-nums ${toneOf(
-                                cell.net
-                              )}`}
-                            >
-                              {m(cell.net, true)}
-                            </div>
-                            <div className="mt-0.5 text-[10px] leading-tight text-ink2">
-                              {cell.trades} {T.tradesShort}
-                            </div>
-                            <div className="text-[10px] leading-tight text-muted">
-                              {cell.wins}W · {cell.losses}L
-                            </div>
-                          </div>
-                          {cell.st && (
-                            <div className="ml-auto text-right text-[10px] leading-tight tabular-nums">
-                              <div className="whitespace-nowrap text-ink2">
-                                {T.pfShort} {pf(cell.st)}
-                              </div>
-                              {/* label and amount may split onto two lines in a narrow square */}
-                              <div className="mt-0.5 text-muted">
-                                <span className="whitespace-nowrap">{T.maxDDShort}</span>{" "}
-                                <span className="whitespace-nowrap">{m(cell.st.maxDD)}</span>
-                              </div>
-                              <div className="whitespace-nowrap text-muted">{pct(cell.st.maxDDPct, 2)}</div>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </button>
-                  )
-                )}
-                <div className="flex min-h-[84px] flex-col justify-center rounded-lg border border-white/[0.06] bg-surface2/60 p-2">
-                  <div className={`whitespace-nowrap text-[12px] font-semibold tabular-nums ${toneOf(weekNet)}`}>
-                    {weekTrades ? m(weekNet, true) : "—"}
-                  </div>
-                  {weekTrades > 0 && (
-                    <div className="mt-0.5 text-[10px] text-muted">
-                      {weekTrades} {T.tradesShort}
+                      {cell.day}
                     </div>
-                  )}
-                </div>
-              </Row>
-            );
-          })}
+                    {cell.trades > 0 && (
+                      // side by side when the square is wide enough; on a
+                      // narrow screen the right-hand block drops underneath
+                      <div className="mt-1 flex flex-wrap items-start justify-between gap-x-2 gap-y-1">
+                        <div>
+                          <div
+                            className={`whitespace-nowrap text-[12px] font-semibold leading-tight tabular-nums ${toneOf(
+                              cell.net
+                            )}`}
+                          >
+                            {m(cell.net, true)}
+                          </div>
+                          <div className="mt-0.5 text-[10px] leading-tight text-ink2">
+                            {cell.trades} {T.tradesShort}
+                          </div>
+                          <div className="text-[10px] leading-tight text-muted">
+                            {cell.wins}W · {cell.losses}L
+                          </div>
+                        </div>
+                        {cell.st && <RiskBlock st={cell.st} T={T} m={m} />}
+                      </div>
+                    )}
+                  </button>
+                )
+              )}
+              <div
+                title={week.trades ? T.weekCellTip : undefined}
+                className="flex min-h-[84px] flex-col justify-center rounded-lg border border-white/[0.06] bg-surface2/60 p-2"
+              >
+                {week.trades ? (
+                  <div className="flex flex-wrap items-start justify-between gap-x-2 gap-y-1">
+                    <div>
+                      <div className={`whitespace-nowrap text-[12px] font-semibold tabular-nums ${toneOf(week.net)}`}>
+                        {m(week.net, true)}
+                      </div>
+                      <div className="mt-0.5 text-[10px] text-muted">
+                        {week.trades} {T.tradesShort}
+                      </div>
+                    </div>
+                    {week.st && <RiskBlock st={week.st} T={T} m={m} />}
+                  </div>
+                ) : (
+                  <div className="whitespace-nowrap text-[12px] font-semibold tabular-nums text-ink2">—</div>
+                )}
+              </div>
+            </Row>
+          ))}
         </div>
       </div>
 
