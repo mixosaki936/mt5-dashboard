@@ -1,12 +1,6 @@
 import { NextResponse } from "next/server";
 import { normalizeSnapshot } from "@/lib/normalize";
-import {
-  listAccounts,
-  readSnapshot,
-  writeSnapshot,
-  mergeEquityHistory,
-  usingKv,
-} from "@/lib/store";
+import { ingest, readReport, usingKv } from "@/lib/store";
 import { demoSnapshot } from "@/lib/demo";
 
 export const dynamic = "force-dynamic";
@@ -35,21 +29,29 @@ export async function OPTIONS() {
 const json = (body) =>
   NextResponse.json(body, { headers: { ...CORS, "Cache-Control": "no-store" } });
 
+// Equity history is not part of this response — the chart fetches it from
+// /api/equity on a slower cycle, so this once-a-minute poll stays small.
 export async function GET(req) {
   const url = new URL(req.url);
   // No ?account= -> whichever account reported most recently.
   const requested = url.searchParams.get("account");
-  const accounts = await listAccounts();
-  const stored = await readSnapshot(requested);
+  let accounts, report;
+  try {
+    ({ accounts, report } = await readReport(requested));
+  } catch (e) {
+    console.error("[report] read failed:", e.message);
+    return NextResponse.json({ error: e.message }, { status: 502, headers: CORS });
+  }
   const demoOn = process.env.DEMO_DATA !== "off";
 
-  if (url.searchParams.get("demo") === "1" || (!stored && demoOn)) {
-    return json({ ...demoSnapshot(), accounts, source: "demo" });
+  if (url.searchParams.get("demo") === "1" || (!report && demoOn)) {
+    const { equityHistory, ...demo } = demoSnapshot();
+    return json({ ...demo, accounts, source: "demo" });
   }
-  if (!stored) {
-    return json({ empty: true, account: {}, positions: [], deals: [], equityHistory: [], accounts });
+  if (!report) {
+    return json({ empty: true, account: {}, positions: [], deals: [], accounts });
   }
-  return json({ ...stored, accounts, source: usingKv ? "kv" : "memory" });
+  return json({ ...report, accounts, source: usingKv ? "kv" : "memory" });
 }
 
 export async function POST(req) {
@@ -77,10 +79,13 @@ export async function POST(req) {
     return NextResponse.json({ ok: false, error: e.message }, { status: 400, headers: CORS });
   }
 
-  // Merge against this account's own history, not whoever posted last.
-  const previous = await readSnapshot(snapshot.account.login);
-  snapshot.equityHistory = mergeEquityHistory(previous, snapshot);
-  const result = await writeSnapshot(snapshot);
+  let result;
+  try {
+    result = await ingest(snapshot);
+  } catch (e) {
+    console.error("[report] store failed:", e.message);
+    return NextResponse.json({ ok: false, error: e.message }, { status: 502, headers: CORS });
+  }
 
   return NextResponse.json(
     {

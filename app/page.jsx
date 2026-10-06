@@ -19,6 +19,35 @@ import { DealsTable, PositionsTable } from "@/components/tables";
 import TradingCalendar from "@/components/calendar";
 import SymbolPanel from "@/components/symbol-panel";
 
+// Equity history barely changes from one minute to the next, so the chart
+// refetches it far less often than the live numbers.
+const EQUITY_REFRESH_MS = 10 * 60 * 1000;
+
+/**
+ * Cuts a long series down to about `max` points, keeping each stretch's high
+ * and low so a dip doesn't vanish just because the chart is zoomed out.
+ */
+function thin(points, max) {
+  if (points.length <= max) return points;
+  const size = Math.ceil(points.length / (max / 2));
+  const out = [];
+  for (let i = 0; i < points.length; i += size) {
+    const chunk = points.slice(i, i + size);
+    let lo = chunk[0];
+    let hi = chunk[0];
+    for (const p of chunk) {
+      if (p.equity < lo.equity) lo = p;
+      if (p.equity > hi.equity) hi = p;
+    }
+    if (lo === hi) out.push(lo);
+    else if (lo.t < hi.t) out.push(lo, hi);
+    else out.push(hi, lo);
+  }
+  const last = points[points.length - 1];
+  if (out[out.length - 1] !== last) out.push(last);
+  return out;
+}
+
 const RANGES = ["all", "today", "wtd", "7d", "30d", "90d", "mtd", "custom"];
 const INTERVALS = [0, 30, 60, 300];
 
@@ -38,6 +67,8 @@ const save = (k, v) => {
 
 export default function Page() {
   const [raw, setRaw] = useState(null);
+  const [equity, setEquity] = useState(null); // { login, points, days, today } from /api/equity
+  const equityAt = useRef(0);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [lang, setLang] = useState("th");
@@ -86,11 +117,51 @@ export default function Page() {
     fetchData();
   }, [fetchData]);
 
+  // A tab left open in the background shouldn't keep pulling data nobody sees.
   useEffect(() => {
     if (timer.current) clearInterval(timer.current);
-    if (interval_ > 0) timer.current = setInterval(fetchData, interval_ * 1000);
+    if (interval_ > 0) {
+      timer.current = setInterval(() => {
+        if (!document.hidden) fetchData();
+      }, interval_ * 1000);
+    }
     return () => timer.current && clearInterval(timer.current);
   }, [interval_, fetchData]);
+
+  const shownLogin = raw?.source === "demo" ? "demo" : raw?.account?.login ?? null;
+
+  const fetchEquity = useCallback(async () => {
+    if (!shownLogin) return;
+    try {
+      const qs = shownLogin === "demo" ? "?demo=1" : `?account=${encodeURIComponent(shownLogin)}`;
+      const res = await fetch(`/api/equity${qs}`, { cache: "no-store" });
+      if (!res.ok) return;
+      const j = await res.json();
+      equityAt.current = Date.now();
+      setEquity({ login: shownLogin, points: j.points || [], days: j.days || {}, today: j.today || null });
+    } catch {
+      // the chart falls back to the balance curve from closed deals
+    }
+  }, [shownLogin]);
+
+  useEffect(() => {
+    fetchEquity();
+    const id = setInterval(() => {
+      if (!document.hidden) fetchEquity();
+    }, EQUITY_REFRESH_MS);
+    return () => clearInterval(id);
+  }, [fetchEquity]);
+
+  // Coming back to the tab: catch up at once instead of waiting for the timers.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.hidden) return;
+      if (interval_ > 0) fetchData();
+      if (Date.now() - equityAt.current > EQUITY_REFRESH_MS) fetchEquity();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [interval_, fetchData, fetchEquity]);
 
   const accounts = raw?.accounts || [];
 
@@ -175,25 +246,33 @@ export default function Page() {
 
   const equitySeries = useMemo(() => {
     if (!model) return [];
+    // Ignore a history still loaded for the account that was shown before.
+    const pts = equity && equity.login === shownLogin ? equity.points : [];
     const hist = filterDealsByRange(
-      (model.equityHistory || []).map((p) => ({ ...p, closeTime: p.t })),
+      pts.map(([t, e, b]) => ({
+        t: t * 1000,
+        equity: e,
+        balance: b,
+        closeTime: new Date(t * 1000).toISOString(),
+      })),
       range,
       new Date(),
       tzOffset
     );
     if (hist.length > 1) {
+      const shown = thin(hist, 1200);
       return [
         {
           key: "equity",
           label: T.equity,
           color: "#3987e5",
-          points: hist.map((p) => ({ x: new Date(p.t).getTime(), y: p.equity })),
+          points: shown.map((p) => ({ x: p.t, y: p.equity })),
         },
         {
           key: "balance",
           label: T.balance,
           color: "#199e70",
-          points: hist.map((p) => ({ x: new Date(p.t).getTime(), y: p.balance })),
+          points: shown.map((p) => ({ x: p.t, y: p.balance })),
         },
       ];
     }
@@ -209,7 +288,7 @@ export default function Page() {
       ];
     }
     return [];
-  }, [model, range, T, tzOffset]);
+  }, [model, equity, shownLogin, range, T, tzOffset]);
 
   const fmtX = (v, long) =>
     long ? formatDateTime(v, tzOffset) : formatDate(v, tzOffset);
@@ -358,7 +437,10 @@ export default function Page() {
             ))}
           </select>
           <button
-            onClick={fetchData}
+            onClick={() => {
+              fetchData();
+              fetchEquity();
+            }}
             className="rounded-lg border border-white/[0.08] bg-surface2 px-3 py-1.5 text-xs text-ink2 transition hover:bg-white/[0.08] hover:text-ink"
           >
             ↻ {T.refresh}
