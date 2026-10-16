@@ -2,7 +2,7 @@
 // once-a-minute poll stays small. The page asks for this far less often.
 
 import { NextResponse } from "next/server";
-import { readEquity } from "@/lib/store";
+import { readEquity, readEquityAll } from "@/lib/store";
 import { demoSnapshot } from "@/lib/demo";
 
 export const dynamic = "force-dynamic";
@@ -15,6 +15,16 @@ export async function GET(req) {
   const url = new URL(req.url);
   const account = url.searchParams.get("account");
   const demoOn = process.env.DEMO_DATA !== "off";
+
+  // ?account=all -> each account's own series; the page sums the ones it shows.
+  if (account === "all") {
+    try {
+      return json(await readEquityAll());
+    } catch (e) {
+      console.error("[equity] read failed:", e.message);
+      return json({ error: e.message }, 502);
+    }
+  }
 
   let equity = null;
   if (account && url.searchParams.get("demo") !== "1") {

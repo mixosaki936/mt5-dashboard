@@ -17,6 +17,8 @@ import { BarChart, Donut, LineChart } from "@/components/charts";
 import { Card, Kpi, Pill, Segmented, Stat } from "@/components/ui";
 import { DealsTable, PositionsTable } from "@/components/tables";
 import TradingCalendar from "@/components/calendar";
+import AccountsCard from "@/components/accounts-card";
+import { ALL, baseCurrency, combineReports, sumEquity } from "@/lib/combine";
 import SymbolPanel from "@/components/symbol-panel";
 
 // Equity history barely changes from one minute to the next, so the chart
@@ -79,6 +81,8 @@ export default function Page() {
   const [range, setRange] = useState("all");
   const [tab, setTab] = useState("__all__");
   const [account, setAccount] = useState(null);
+  // Logins left out of the combined total — new accounts count by default.
+  const [excluded, setExcluded] = useState([]);
   const [interval_, setInterval_] = useState(60);
   // Which clock the trading day is counted on — "auto" follows the broker.
   const [tz, setTz] = useState("auto");
@@ -94,6 +98,7 @@ export default function Page() {
     setRange(load("mt5.range", "all"));
     setInterval_(load("mt5.interval", 60));
     setAccount(load("mt5.account", null));
+    setExcluded(load("mt5.excluded", []));
     // "auto" = the broker's clock; anything else stored by an older build is stale
     const savedTz = load("mt5.tz", "auto");
     setTz(TZ_SETTINGS.includes(savedTz) ? savedTz : "auto");
@@ -128,7 +133,34 @@ export default function Page() {
     return () => timer.current && clearInterval(timer.current);
   }, [interval_, fetchData]);
 
-  const shownLogin = raw?.source === "demo" ? "demo" : raw?.account?.login ?? null;
+  // With "all accounts" picked the API hands back every report; which ones
+  // count is decided here, so ticking one in or out needs no round trip.
+  const combo = useMemo(() => {
+    if (!raw?.combined) return null;
+    const reports = raw.reports || [];
+    const base = baseCurrency(reports);
+    const rows = reports.map((r) => {
+      const login = String(r.account?.login);
+      const compatible = (r.account?.currency || "USD") === base;
+      return { report: r, login, compatible, included: compatible && !excluded.includes(login) };
+    });
+    // If every account ended up unticked, count them all rather than show nothing.
+    if (!rows.some((x) => x.included)) rows.forEach((x) => (x.included = x.compatible));
+    return { base, rows };
+  }, [raw, excluded]);
+
+  // What the rest of the page reads: one account's report, or the combined one.
+  const view = useMemo(() => {
+    if (!raw || !combo) return raw;
+    return {
+      ...combineReports(combo.rows.filter((x) => x.included).map((x) => x.report), combo.base),
+      accounts: raw.accounts,
+      source: raw.source,
+    };
+  }, [raw, combo]);
+
+  const shownLogin =
+    view?.source === "demo" ? "demo" : view?.combined ? ALL : view?.account?.login ?? null;
 
   const fetchEquity = useCallback(async () => {
     if (!shownLogin) return;
@@ -138,7 +170,13 @@ export default function Page() {
       if (!res.ok) return;
       const j = await res.json();
       equityAt.current = Date.now();
-      setEquity({ login: shownLogin, points: j.points || [], days: j.days || {}, today: j.today || null });
+      setEquity({
+        login: shownLogin,
+        points: j.points || [],
+        series: j.series || null, // all accounts: one series each, summed below
+        days: j.days || {},
+        today: j.today || null,
+      });
     } catch {
       // the chart falls back to the balance curve from closed deals
     }
@@ -165,37 +203,48 @@ export default function Page() {
 
   const accounts = raw?.accounts || [];
 
-  // Pick the newest account on first load, and recover if the selected one
-  // disappears (that bridge stopped reporting, or KV was cleared).
+  // With more than one account, open on the combined view; recover if the
+  // selected account disappears (that bridge stopped reporting, or KV was cleared).
   useEffect(() => {
     if (!accounts.length) return;
-    if (!accounts.some((a) => String(a.login) === String(account))) {
-      setAccount(String(accounts[0].login));
-    }
+    const valid =
+      account === ALL ? accounts.length > 1 : accounts.some((a) => String(a.login) === String(account));
+    if (!valid) setAccount(accounts.length > 1 ? ALL : String(accounts[0].login));
   }, [accounts, account]);
 
+  const openAccount = (login) => {
+    setAccount(String(login));
+    save("mt5.account", String(login));
+    setTab("__all__");
+  };
+  const toggleIncluded = (login) => {
+    const next = excluded.includes(login) ? excluded.filter((x) => x !== login) : [...excluded, login];
+    setExcluded(next);
+    save("mt5.excluded", next);
+  };
+
   const T = t(lang);
-  const serverOffset = raw?.account?.serverOffsetMin;
+  const serverOffset = view?.account?.serverOffsetMin;
   const tzOffset = resolveOffset(tz, Number.isFinite(serverOffset) ? serverOffset : null);
   const tzName = offsetLabel(tzOffset);
   const picked = customDays(range);
   // ปฏิทินของ input ไม่ควรให้เลือกเลยวันที่มีข้อมูล
   const dayRange = useMemo(() => {
-    const days = (raw?.deals || [])
+    const days = (view?.deals || [])
       .map((d) => d.closeTime && dayKey(d.closeTime, tzOffset))
       .filter(Boolean)
       .sort();
     return { first: days[0] || null, last: dayKey(new Date(), tzOffset) };
-  }, [raw, tzOffset]);
+  }, [view, tzOffset]);
   // เรตบาท: ฟีดโบรก > แหล่งออนไลน์ > ที่กรอกเอง
-  const brokerFx = Number.isFinite(raw?.usdThb) ? raw.usdThb : null;
+  const brokerFx = Number.isFinite(view?.usdThb) ? view.usdThb : null;
   const lookedUpFx = brokerFx ?? (Number.isFinite(autoFx?.rate) ? autoFx.rate : null);
   const fxRate = rateMode === "auto" && lookedUpFx ? lookedUpFx : rate;
   const fxSource =
     rateMode === "manual" || !lookedUpFx
       ? T.fxTyped
       : brokerFx
-      ? `${T.fxFromBroker} · ${formatDateTime(raw?.updatedAt, tzOffset)}`
+      ? `${T.fxFromBroker} · ${formatDateTime(view?.updatedAt, tzOffset)}`
       : `${autoFx.source}${autoFx.at ? ` · ${autoFx.at}` : ""}`;
   const fx = currency === "THB" ? fxRate : 1;
   const m = useCallback(
@@ -224,9 +273,26 @@ export default function Page() {
   }, [tzOffset, account]);
 
   const model = useMemo(
-    () => (raw ? buildModel(raw, { range, offsetMin: tzOffset }) : null),
-    [raw, range, tzOffset]
+    () => (view ? buildModel(view, { range, offsetMin: tzOffset }) : null),
+    [view, range, tzOffset]
   );
+
+  // Each account on its own, for the card listing what the total is made of.
+  const accountRows = useMemo(() => {
+    if (!combo) return [];
+    return combo.rows.map((x) => ({
+      login: x.login,
+      name: x.report.account?.name || "",
+      server: x.report.account?.server || "",
+      currency: x.report.account?.currency || "USD",
+      compatible: x.compatible,
+      included: x.included,
+      updatedAt: x.report.updatedAt,
+      stale:
+        !x.report.updatedAt || Date.now() - new Date(x.report.updatedAt).getTime() > 15 * 60 * 1000,
+      model: buildModel(x.report, { range, offsetMin: tzOffset }),
+    }));
+  }, [combo, range, tzOffset]);
 
   const digitsFor = useCallback(
     (symbol) => {
@@ -247,7 +313,15 @@ export default function Page() {
   const equitySeries = useMemo(() => {
     if (!model) return [];
     // Ignore a history still loaded for the account that was shown before.
-    const pts = equity && equity.login === shownLogin ? equity.points : [];
+    let pts = [];
+    if (equity && equity.login === shownLogin) {
+      if (equity.series) {
+        const counted = new Set((combo?.rows || []).filter((x) => x.included).map((x) => x.login));
+        pts = sumEquity(equity.series.filter((s) => counted.has(String(s.login))));
+      } else {
+        pts = equity.points;
+      }
+    }
     const hist = filterDealsByRange(
       pts.map(([t, e, b]) => ({
         t: t * 1000,
@@ -288,7 +362,7 @@ export default function Page() {
       ];
     }
     return [];
-  }, [model, equity, shownLogin, range, T, tzOffset]);
+  }, [model, equity, combo, shownLogin, range, T, tzOffset]);
 
   const fmtX = (v, long) =>
     long ? formatDateTime(v, tzOffset) : formatDate(v, tzOffset);
@@ -301,13 +375,20 @@ export default function Page() {
     );
   }
 
-  const empty = !model || raw?.empty || (!model.deals.length && !model.positions.length);
-  const isDemo = raw?.source === "demo";
+  // Only a server that has never been sent anything gets the setup card. An
+  // account with no trades in the chosen range is still an account: its balance
+  // and equity are real, and the tables say there is nothing in this period.
+  const empty = !model || view?.empty || (view?.combined && !combo?.rows.length);
+  const isDemo = view?.source === "demo";
+  const combined = Boolean(view?.combined);
   const acc = model?.account || {};
   const p = model?.portfolio;
   const stale = model?.updatedAt
     ? Date.now() - new Date(model.updatedAt).getTime() > 15 * 60 * 1000
     : true;
+
+  const activeTab =
+    tab !== "__all__" && model?.bySymbol.some((x) => x.symbol === tab) ? tab : "__all__";
 
   const symbolColor = (name) =>
     colorFor((model?.symbolNames || []).indexOf(name));
@@ -329,6 +410,14 @@ export default function Page() {
           </div>
           <p className="mt-1 text-xs text-muted">
             {T.subtitle}
+            {combined && (
+              <>
+                {" · "}
+                <span className="text-ink2">
+                  {T.combinedOf(accountRows.filter((r) => r.included).length)}
+                </span>
+              </>
+            )}
             {acc.login && (
               <>
                 {" · "}
@@ -355,6 +444,7 @@ export default function Page() {
               }}
               className="max-w-[240px] rounded-lg border border-white/[0.08] bg-surface2 px-2 py-1.5 text-xs text-ink2 outline-none"
             >
+              <option value={ALL}>{T.allAccounts}</option>
               {accounts.map((a) => (
                 <option key={a.login} value={a.login}>
                   {`#${a.login}${a.name ? ` · ${a.name}` : ""}${a.server ? ` · ${a.server}` : ""}`}
@@ -523,7 +613,7 @@ export default function Page() {
             <button
               onClick={() => setTab("__all__")}
               className={`rounded-lg px-3 py-2 text-sm transition ${
-                tab === "__all__"
+                activeTab === "__all__"
                   ? "bg-white/[0.12] font-medium text-ink"
                   : "text-muted hover:bg-white/[0.05] hover:text-ink2"
               }`}
@@ -535,7 +625,7 @@ export default function Page() {
                 key={s.symbol}
                 onClick={() => setTab(s.symbol)}
                 className={`flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition ${
-                  tab === s.symbol
+                  activeTab === s.symbol
                     ? "bg-white/[0.12] font-medium text-ink"
                     : "text-muted hover:bg-white/[0.05] hover:text-ink2"
                 }`}
@@ -550,7 +640,7 @@ export default function Page() {
             ))}
           </div>
 
-          {tab === "__all__" ? (
+          {activeTab === "__all__" ? (
             <div className="space-y-4">
               {/* KPI grid */}
               <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-6">
@@ -584,15 +674,26 @@ export default function Page() {
                 />
                 <Kpi
                   label={T.winRate}
-                  value={pct(p.winRate, 1)}
+                  value={p.trades ? pct(p.winRate, 1) : "—"}
                   sub={`${p.wins} ${T.wins} / ${p.losses} ${T.losses}`}
                 />
                 <Kpi
                   label={T.profitFactor}
-                  value={p.profitFactor === null ? "∞" : num(p.profitFactor, 2)}
+                  value={!p.trades ? "—" : p.profitFactor === null ? "∞" : num(p.profitFactor, 2)}
                   sub={`${T.maxDD} ${m(p.maxDD)} (${pct(p.maxDDPct, 1)})`}
                 />
               </div>
+
+              {combined && (
+                <AccountsCard
+                  rows={accountRows}
+                  T={T}
+                  m={m}
+                  lang={lang}
+                  onToggle={toggleIncluded}
+                  onOpen={openAccount}
+                />
+              )}
 
               {/* equity curve */}
               <Card
@@ -677,6 +778,13 @@ export default function Page() {
                       </tr>
                     </thead>
                     <tbody>
+                      {!model.bySymbol.length && (
+                        <tr>
+                          <td colSpan={11} className="py-6 text-center text-sm text-muted">
+                            {T.noDeals}
+                          </td>
+                        </tr>
+                      )}
                       {model.bySymbol.map((s) => (
                         <tr
                           key={s.symbol}
@@ -707,7 +815,8 @@ export default function Page() {
               </Card>
 
               <TradingCalendar
-                deals={raw?.deals || []}
+                deals={view?.deals || []}
+                showAccount={combined}
                 initial={acc.initialDeposit || 0}
                 T={T}
                 lang={lang}
@@ -733,16 +842,31 @@ export default function Page() {
               </Card>
 
               <Card title={T.openPositions} subtitle={`${p.openCount} · ${num(p.openLots, 2)} lot`}>
-                <PositionsTable rows={model.positions} T={T} m={m} digitsFor={digitsFor} tzOffset={tzOffset} />
+                <PositionsTable
+                  rows={model.positions}
+                  T={T}
+                  m={m}
+                  showAccount={combined}
+                  digitsFor={digitsFor}
+                  tzOffset={tzOffset}
+                />
               </Card>
 
               <Card title={T.closedDeals}>
-                <DealsTable rows={model.deals} T={T} m={m} lang={lang} digitsFor={digitsFor} tzOffset={tzOffset} />
+                <DealsTable
+                  rows={model.deals}
+                  T={T}
+                  m={m}
+                  lang={lang}
+                  showAccount={combined}
+                  digitsFor={digitsFor}
+                  tzOffset={tzOffset}
+                />
               </Card>
             </div>
           ) : (
             (() => {
-              const s = model.bySymbol.find((x) => x.symbol === tab);
+              const s = model.bySymbol.find((x) => x.symbol === activeTab);
               if (!s) return null;
               return (
                 <SymbolPanel
@@ -753,6 +877,7 @@ export default function Page() {
                   color={symbolColor(s.symbol)}
                   digitsFor={digitsFor}
                   tzOffset={tzOffset}
+                  showAccount={combined}
                 />
               );
             })()

@@ -6,7 +6,7 @@ import { DealsTable, PositionsTable } from "./tables";
 import { duration, money, num, pct, toneOf } from "@/lib/format";
 import { formatDate, offsetLabel } from "@/lib/time";
 
-export default function SymbolPanel({ s, T, lang, m, color, digitsFor, tzOffset = 0 }) {
+export default function SymbolPanel({ s, T, lang, m, color, digitsFor, tzOffset = 0, showAccount = false }) {
   const curvePoints = s.curve.map((c, i) => ({ x: c.t ? new Date(c.t).getTime() : i, y: c.net }));
   const fmtX = (v, long) => formatDate(v, tzOffset, { year: long });
 
@@ -33,8 +33,12 @@ export default function SymbolPanel({ s, T, lang, m, color, digitsFor, tzOffset 
           spark={curvePoints}
           sparkColor={color}
         />
-        <Kpi label={T.winRate} value={pct(s.winRate, 1)} sub={`${s.wins} ${T.wins} / ${s.losses} ${T.losses}`} />
-        <Kpi label={T.profitFactor} value={s.profitFactor === null ? "∞" : num(s.profitFactor, 2)} sub={`${T.trades} ${s.trades}`} />
+        <Kpi label={T.winRate} value={s.trades ? pct(s.winRate, 1) : "—"} sub={`${s.wins} ${T.wins} / ${s.losses} ${T.losses}`} />
+        <Kpi
+          label={T.profitFactor}
+          value={!s.trades ? "—" : s.profitFactor === null ? "∞" : num(s.profitFactor, 2)}
+          sub={`${T.trades} ${s.trades}`}
+        />
         <Kpi label={T.maxDD} value={m(s.maxDD)} tone={s.maxDD > 0 ? "neg" : "neutral"} sub={pct(s.maxDDPct, 1)} />
         <Kpi label={T.expectancy} value={m(s.expectancy, true)} tone={s.expectancy > 0 ? "pos" : s.expectancy < 0 ? "neg" : "neutral"} sub={`${T.totalLots} ${num(s.volume, 2)}`} />
         <Kpi
@@ -127,7 +131,15 @@ export default function SymbolPanel({ s, T, lang, m, color, digitsFor, tzOffset 
       </Card>
 
       <Card title={`${T.openPositions} — ${s.symbol}`} subtitle={`${s.positions.length}`}>
-        <PositionsTable rows={s.positions} T={T} m={m} showSymbol={false} digitsFor={digitsFor} tzOffset={tzOffset} />
+        <PositionsTable
+          rows={s.positions}
+          T={T}
+          m={m}
+          showSymbol={false}
+          showAccount={showAccount}
+          digitsFor={digitsFor}
+          tzOffset={tzOffset}
+        />
       </Card>
 
       <Card title={`${T.closedDeals} — ${s.symbol}`}>
@@ -137,6 +149,7 @@ export default function SymbolPanel({ s, T, lang, m, color, digitsFor, tzOffset 
           m={m}
           lang={lang}
           showSymbol={false}
+          showAccount={showAccount}
           digitsFor={digitsFor}
           tzOffset={tzOffset}
         />

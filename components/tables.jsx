@@ -44,7 +44,15 @@ function DownloadCsv({ rows, columns, name, label }) {
   );
 }
 
-export function PositionsTable({ rows, T, m, showSymbol = true, digitsFor = () => 2, tzOffset = 0 }) {
+export function PositionsTable({
+  rows,
+  T,
+  m,
+  showSymbol = true,
+  showAccount = false,
+  digitsFor = () => 2,
+  tzOffset = 0,
+}) {
   if (!rows.length) {
     return <div className="py-6 text-center text-sm text-muted">{T.noOpen}</div>;
   }
@@ -53,6 +61,7 @@ export function PositionsTable({ rows, T, m, showSymbol = true, digitsFor = () =
       <table className="w-full min-w-[720px] border-collapse">
         <thead>
           <tr className="border-b border-hair">
+            {showAccount && <th className={th}>{T.account}</th>}
             {showSymbol && <th className={th}>{T.symbol}</th>}
             <th className={th}>{T.type}</th>
             <th className={`${th} text-right`}>{T.volume}</th>
@@ -70,7 +79,8 @@ export function PositionsTable({ rows, T, m, showSymbol = true, digitsFor = () =
             const net = p.profit + p.swap + p.commission;
             const dg = digitsFor(p.symbol);
             return (
-              <tr key={p.ticket} className="border-b border-hair/60 last:border-0 hover:bg-white/[0.03]">
+              <tr key={p.uid ?? p.ticket} className="border-b border-hair/60 last:border-0 hover:bg-white/[0.03]">
+                {showAccount && <td className={`${td} text-muted`}>#{p.login}</td>}
                 {showSymbol && <td className={`${td} font-medium text-ink`}>{p.symbol}</td>}
                 <td className={td}><TypeTag type={p.type} /></td>
                 <td className={`${td} text-right tabular-nums`}>{num(p.volume, 2)}</td>
@@ -96,6 +106,7 @@ export function DealsTable({
   m,
   lang,
   showSymbol = true,
+  showAccount = false,
   digitsFor = () => 2,
   pageSize = 20,
   tzOffset = 0,
@@ -115,6 +126,7 @@ export function DealsTable({
   const csvColumns = [
     { key: "closeTime", raw: (r) => stamp(r.closeTime, tzOffset) },
     { key: "openTime", raw: (r) => stamp(r.openTime, tzOffset) },
+    ...(showAccount ? [{ key: "account", raw: (r) => r.login }] : []),
     { key: "symbol" },
     { key: "type" },
     { key: "volume" },
@@ -135,6 +147,7 @@ export function DealsTable({
           <thead>
             <tr className="border-b border-hair">
               <th className={th}>{T.closeTime}</th>
+              {showAccount && <th className={th}>{T.account}</th>}
               {showSymbol && <th className={th}>{T.symbol}</th>}
               <th className={th}>{T.type}</th>
               <th className={`${th} text-right`}>{T.volume}</th>
@@ -157,10 +170,11 @@ export function DealsTable({
                   : null;
               return (
                 <tr
-                  key={d.ticket ?? i}
+                  key={d.uid ?? d.ticket ?? i}
                   className="border-b border-hair/60 last:border-0 hover:bg-white/[0.03]"
                 >
                   <td className={`${td} text-muted`}>{formatDateTime(d.closeTime, tzOffset)}</td>
+                  {showAccount && <td className={`${td} text-muted`}>#{d.login}</td>}
                   {showSymbol && <td className={`${td} font-medium text-ink`}>{d.symbol}</td>}
                   <td className={td}><TypeTag type={d.type} /></td>
                   <td className={`${td} text-right tabular-nums`}>{num(d.volume, 2)}</td>

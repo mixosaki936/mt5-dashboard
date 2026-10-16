@@ -70,6 +70,7 @@ export default function TradingCalendar({
   digitsFor,
   selected,
   onSelect,
+  showAccount = false,
 }) {
   // day key -> { net, trades, wins, losses, list } — deals arrive sorted by close
   const byDay = useMemo(() => {
@@ -394,6 +395,7 @@ export default function TradingCalendar({
             digitsFor={digitsFor}
             tzOffset={tzOffset}
             pageSize={10}
+            showAccount={showAccount}
           />
         </div>
       )}

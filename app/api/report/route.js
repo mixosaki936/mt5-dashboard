@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { normalizeSnapshot } from "@/lib/normalize";
-import { ingest, readReport, usingKv } from "@/lib/store";
+import { ingest, readAll, readReport, usingKv } from "@/lib/store";
 import { demoSnapshot } from "@/lib/demo";
 
 export const dynamic = "force-dynamic";
@@ -35,14 +35,30 @@ export async function GET(req) {
   const url = new URL(req.url);
   // No ?account= -> whichever account reported most recently.
   const requested = url.searchParams.get("account");
+  const demoOn = process.env.DEMO_DATA !== "off";
+
+  // ?account=all -> every account's report; the page adds them up itself so
+  // ticking one in or out of the total needs no round trip.
+  if (requested === "all" && url.searchParams.get("demo") !== "1") {
+    let all;
+    try {
+      all = await readAll();
+    } catch (e) {
+      console.error("[report] read failed:", e.message);
+      return NextResponse.json({ error: e.message }, { status: 502, headers: CORS });
+    }
+    if (all.reports.length || !demoOn) {
+      return json({ combined: true, ...all, source: usingKv ? "kv" : "memory" });
+    }
+  }
+
   let accounts, report;
   try {
-    ({ accounts, report } = await readReport(requested));
+    ({ accounts, report } = await readReport(requested === "all" ? null : requested));
   } catch (e) {
     console.error("[report] read failed:", e.message);
     return NextResponse.json({ error: e.message }, { status: 502, headers: CORS });
   }
-  const demoOn = process.env.DEMO_DATA !== "off";
 
   if (url.searchParams.get("demo") === "1" || (!report && demoOn)) {
     const { equityHistory, ...demo } = demoSnapshot();
